@@ -6,6 +6,8 @@ import { ZeroDevSmartWalletConnectors } from "@dynamic-labs/ethereum-aa";
 import {
   DynamicContextProvider,
   DynamicWidget,
+  // imported createWalletClientFromWallet
+  createWalletClientFromWallet,
 } from "@dynamic-labs/sdk-react-core";
 
 import usdtAbi from "../public/usdtAbi.json";
@@ -32,7 +34,6 @@ export default function Home() {
         environmentId: process.env.NEXT_PUBLIC_DYNAMIC_ENVIRONMENT_ID,
         eventsCallbacks: {
           onAuthSuccess: async (args) => {
-
               const publicClient = createPublicClient({
                 chain: polygon,
                 transport: http(process.env.NEXT_PUBLIC_ZERODEV_BUNDLER_RPC),
@@ -44,17 +45,19 @@ export default function Home() {
               const owner =
                 LocalAccountSigner.privateKeyToAccountSigner(sessionPrivateKey);
 
+                // Changes started
+                const primaryWallet = args?.primaryWallet
 
+                if (!primaryWallet) {
+                  throw new Error("Primary wallet is required");
+                }
 
-              const dynamicWalletClient: any =
-                await args?.primaryWallet?.connector?.getWalletClient();
-
-
+                const walletClient = await createWalletClientFromWallet(primaryWallet)
 
               const smartAccountSigner = await walletClientToSmartAccountSigner(
-                dynamicWalletClient
+                walletClient
               );
-
+              // Changes ended
 
 
               const ecdsaValidator = await signerToEcdsaValidator(
@@ -107,6 +110,12 @@ export default function Home() {
                   },
                 }
               );
+
+              console.log("sessionKeyAccount", sessionKeyAccount)
+              
+              // adding the following to serialize the session key account
+              const serializedSessionKey = await serializeSessionKeyAccount(sessionKeyAccount, sessionPrivateKey)
+
           },
         },
         walletConnectors: [
