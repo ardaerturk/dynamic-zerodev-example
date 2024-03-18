@@ -22,7 +22,8 @@ import { signerToEcdsaValidator } from "@zerodev/ecdsa-validator";
 
 import {
   signerToSessionKeyValidator,
-  ParamOperator, oneAddress
+  ParamOperator, oneAddress,
+  serializeSessionKeyAccount
 } from "@zerodev/session-key";
 import { walletClientToSmartAccountSigner } from "permissionless";
 import { createKernelAccount } from "@zerodev/sdk";
