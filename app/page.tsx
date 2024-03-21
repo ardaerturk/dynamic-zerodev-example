@@ -4,15 +4,14 @@
 import { EthereumWalletConnectors } from "@dynamic-labs/ethereum";
 import { ZeroDevSmartWalletConnectors } from "@dynamic-labs/ethereum-aa";
 import {
+  createWalletClientFromWallet,
   DynamicContextProvider,
   DynamicWidget,
-  // imported createWalletClientFromWallet
-  createWalletClientFromWallet,
 } from "@dynamic-labs/sdk-react-core";
 
 import usdtAbi from "../public/usdtAbi.json";
 
-import { http, createPublicClient } from "viem";
+import { createPublicClient, http, WalletClient } from "viem";
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
 import { polygon } from "viem/chains";
 
@@ -20,13 +19,20 @@ import { LocalAccountSigner } from "@alchemy/aa-core";
 
 import { signerToEcdsaValidator } from "@zerodev/ecdsa-validator";
 
+import { ethers } from "ethers";
+
 import {
-  signerToSessionKeyValidator,
-  ParamOperator, oneAddress,
-  serializeSessionKeyAccount
-} from "@zerodev/session-key";
-import { walletClientToSmartAccountSigner } from "permissionless";
-import { createKernelAccount } from "@zerodev/sdk";
+  createKernelAccount,
+  createKernelAccountClient,
+  createZeroDevPaymasterClient,
+  KernelPluginManager,
+} from "@zerodev/sdk";
+import { KernelEncodeCallDataArgs } from "@zerodev/sdk/types";
+import {
+  UserOperation,
+  walletClientToSmartAccountSigner,
+} from "permissionless";
+import { SmartAccountSigner } from "permissionless/accounts";
 
 export default function Home() {
   return (
@@ -35,88 +41,93 @@ export default function Home() {
         environmentId: process.env.NEXT_PUBLIC_DYNAMIC_ENVIRONMENT_ID,
         eventsCallbacks: {
           onAuthSuccess: async (args) => {
-              const publicClient = createPublicClient({
-                chain: polygon,
-                transport: http(process.env.NEXT_PUBLIC_ZERODEV_BUNDLER_RPC),
-              });
+            const publicClient = createPublicClient({
+              chain: polygon,
+              transport: http(process.env.NEXT_PUBLIC_ZERODEV_BUNDLER_RPC),
+            });
 
-              const sessionPrivateKey = generatePrivateKey();
-              const sessionKeySigner = privateKeyToAccount(sessionPrivateKey);
+            const primaryWallet = args?.primaryWallet;
 
-              const owner =
-                LocalAccountSigner.privateKeyToAccountSigner(sessionPrivateKey);
+            if (!primaryWallet) {
+              throw new Error("Primary wallet is required");
+            }
 
-                // Changes started
-                const primaryWallet = args?.primaryWallet
+            const walletClient = await createWalletClientFromWallet(
+              primaryWallet
+            );
 
-                if (!primaryWallet) {
-                  throw new Error("Primary wallet is required");
-                }
+            if (!walletClient) return;
 
-                const walletClient = await createWalletClientFromWallet(primaryWallet)
+            const smartAccountSigner = (await walletClientToSmartAccountSigner(
+              walletClient as WalletClient
+            )) as SmartAccountSigner;
 
-              const smartAccountSigner = await walletClientToSmartAccountSigner(
-                walletClient
-              );
-              // Changes ended
+            const ecdsaValidator = await signerToEcdsaValidator(publicClient, {
+              signer: smartAccountSigner as SmartAccountSigner,
+            });
 
+            console.log("ecdsaValidator", ecdsaValidator);
 
-              const ecdsaValidator = await signerToEcdsaValidator(
-                publicClient,
-                {
-                  signer: smartAccountSigner,
-                }
-              );
-
-              const permissions = [
-                {
-                  target: "0xc2132d05d31c914a87c6611c10748aeb04b58e8f",
-                  valueLimit: 0n,
-                  abi: usdtAbi,
-                  functionName: "balanceOf",
-                  args: [
-                    {
-                      operator: ParamOperator.EQUAL,
-                      value: args?.primaryWallet?.address,
-                    }, // User's address
-                  ],
-                },
-                {
-                  target: "0xc2132d05d31c914a87c6611c10748aeb04b58e8f",
-                  valueLimit: 0n,
-                  abi: usdtAbi,
-                  functionName: "transfer",
-                  args: [{ operator: ParamOperator.GREATER_THAN, value: 0 }],
-                },
-              ];
+            const account = await createKernelAccount(publicClient, {
+              deployedAccountAddress: primaryWallet?.address,
+              plugins: {
+                sudo: ecdsaValidator,
+              },
+            });
 
 
-              const sessionKeyValidator = await signerToSessionKeyValidator(
-                publicClient,
-                {
-                  signer: sessionKeySigner,
-                  validatorData: {
-                    paymaster: oneAddress,
-                    permissions: permissions,
-                  },
-                }
-              );
+            const kernelClient = createKernelAccountClient({
+              account: account,
+              chain: polygon,
+              transport: http(process.env.NEXT_PUBLIC_ZERODEV_BUNDLER_RPC),
+              sponsorUserOperation: async ({
+                userOperation,
+              }): Promise<UserOperation> => {
+                const paymasterClient = createZeroDevPaymasterClient({
+                  chain: polygon,
+                  transport: http(
+                    process.env.NEXT_PUBLIC_ZERODEV_PAYMASTER_RPC
+                  ),
+                });
+                return paymasterClient.sponsorUserOperation({
+                  userOperation,
+                });
+              },
+            });
 
-              const sessionKeyAccount = await createKernelAccount(
-                publicClient,
-                {
-                  plugins: {
-                    sudo: ecdsaValidator,
-                    regular: sessionKeyValidator,
-                  },
-                }
-              );
+            console.log("My account:", kernelClient);
 
-              console.log("sessionKeyAccount", sessionKeyAccount)
-              
-              // adding the following to serialize the session key account
-              const serializedSessionKey = await serializeSessionKeyAccount(sessionKeyAccount, sessionPrivateKey)
+            const iface = new ethers.Interface(usdtAbi); 
 
+
+            // From intersend web-app
+
+            // --------*********---------
+            // const uoCallData = iface.encodeFunctionData('transfer',
+            // [
+            //   walletAddressInput?.toString(),
+            // ethers.parseUnits(usdtTransferDetails?.amount?.toString(), 6),
+            // ]);
+
+            // --------*********---------
+
+
+
+            // following uoCallData sends 0.1 USDT to 0x9C3C4ba068CD06Da93d31F2983298590907d3766 
+            const uoCallData = iface.encodeFunctionData("transfer", [
+              "0x9C3C4ba068CD06Da93d31F2983298590907d3766",
+              ethers.parseUnits("0.1", 6),
+            ]);
+
+            const hash = await kernelClient?.sendUserOperation({
+              userOperation: {
+                callData: (await kernelClient?.account.encodeCallData({
+                  to: "0xc2132d05d31c914a87c6611c10748aeb04b58e8f", // this is USDT address
+                  value: BigInt(0),
+                  data: uoCallData,
+                })),
+              },
+            });
           },
         },
         walletConnectors: [
