@@ -13,7 +13,7 @@ import usdtAbi from "../public/usdtAbi.json";
 import { createPublicClient, http } from "viem";
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
 import { polygon } from "viem/chains";
-
+import {ENTRYPOINT_ADDRESS_V06} from "permissionless";
 
 import { signerToEcdsaValidator } from "@zerodev/ecdsa-validator";
 
@@ -52,14 +52,16 @@ export default function Home() {
 
             const primaryWallet = args?.primaryWallet;
 
+            const entryPoint = ENTRYPOINT_ADDRESS_V06
+
             console.log("primaryWallet", primaryWallet);
 
             if (!primaryWallet) {
               throw new Error("Primary wallet is required");
             }
 
-            const sessionPrivateKey = generatePrivateKey();
-            const sessionKeySigner = privateKeyToAccount(sessionPrivateKey);
+            const sessionPrivateKey = generatePrivateKey(entryPoint);
+            const sessionKeySigner = privateKeyToAccount(sessionPrivateKey, entryPoint);
 
             const eoaConnector =
               await primaryWallet?.connector?.getEOAConnector();
@@ -72,6 +74,7 @@ export default function Home() {
             );
             const ecdsaValidator = await signerToEcdsaValidator(publicClient, {
               signer: smartAccountSigner,
+              entryPoint
             });
 
             const permissions = [
@@ -107,6 +110,7 @@ export default function Home() {
                   paymaster: oneAddress,
                   permissions: permissions,
                 },
+                entryPoint
               }
             );
 
@@ -117,23 +121,27 @@ export default function Home() {
                   sudo: ecdsaValidator,
                   regular: sessionKeyValidator,
                 },
+                entryPoint
               }
             );
 
             const serializedSessionKey = await serializeSessionKeyAccount(
               sessionKeyAccountKernel,
-              sessionPrivateKey
+              sessionPrivateKey,
+              entryPoint
             );
 
             const sessionKeyAccount = await deserializeSessionKeyAccount(
               publicClient,
-              serializedSessionKey
+              serializedSessionKey,
+              entryPoint
             );
 
             const kernelClient = createKernelAccountClient({
               account: sessionKeyAccount,
               chain: polygon,
-              transport: http(process.env.NEXT_PUBLIC_ZERODEV_BUNDLER_RPC),
+              bundlerTransport: http(process.env.NEXT_PUBLIC_ZERODEV_BUNDLER_RPC),
+              entryPoint,
               sponsorUserOperation: async ({
                 userOperation,
               }): Promise<UserOperation> => {
