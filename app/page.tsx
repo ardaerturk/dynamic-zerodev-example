@@ -4,18 +4,16 @@
 import { EthereumWalletConnectors } from "@dynamic-labs/ethereum";
 import { ZeroDevSmartWalletConnectors } from "@dynamic-labs/ethereum-aa";
 import {
-  createWalletClientFromWallet,
   DynamicContextProvider,
-  DynamicWidget,
+  DynamicWidget
 } from "@dynamic-labs/sdk-react-core";
 
 import usdtAbi from "../public/usdtAbi.json";
 
-import { createPublicClient, http, WalletClient } from "viem";
+import { createPublicClient, http } from "viem";
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
 import { polygon } from "viem/chains";
 
-import { LocalAccountSigner } from "@alchemy/aa-core";
 
 import { signerToEcdsaValidator } from "@zerodev/ecdsa-validator";
 
@@ -24,15 +22,21 @@ import { ethers } from "ethers";
 import {
   createKernelAccount,
   createKernelAccountClient,
-  createZeroDevPaymasterClient,
-  KernelPluginManager,
+  createZeroDevPaymasterClient
 } from "@zerodev/sdk";
-import { KernelEncodeCallDataArgs } from "@zerodev/sdk/types";
+
+import {
+  signerToSessionKeyValidator,
+  ParamOperator,
+  serializeSessionKeyAccount,
+  deserializeSessionKeyAccount,
+  oneAddress,
+} from "@zerodev/session-key"
+
 import {
   UserOperation,
   walletClientToSmartAccountSigner,
 } from "permissionless";
-import { SmartAccountSigner } from "permissionless/accounts";
 
 export default function Home() {
   return (
@@ -48,36 +52,86 @@ export default function Home() {
 
             const primaryWallet = args?.primaryWallet;
 
+            console.log("primaryWallet", primaryWallet);
+
             if (!primaryWallet) {
               throw new Error("Primary wallet is required");
             }
 
-            const walletClient = await createWalletClientFromWallet(
-              primaryWallet
-            );
+            const sessionPrivateKey = generatePrivateKey();
+            const sessionKeySigner = privateKeyToAccount(sessionPrivateKey);
+
+            const eoaConnector =
+              await primaryWallet?.connector?.getEOAConnector();
+            const walletClient = await eoaConnector?.getWalletClient();
 
             if (!walletClient) return;
 
-            const smartAccountSigner = (await walletClientToSmartAccountSigner(
-              walletClient as WalletClient
-            )) as SmartAccountSigner;
-
+            const smartAccountSigner = await walletClientToSmartAccountSigner(
+              walletClient
+            );
             const ecdsaValidator = await signerToEcdsaValidator(publicClient, {
-              signer: smartAccountSigner as SmartAccountSigner,
+              signer: smartAccountSigner,
             });
 
-            console.log("ecdsaValidator", ecdsaValidator);
-
-            const account = await createKernelAccount(publicClient, {
-              deployedAccountAddress: primaryWallet?.address,
-              plugins: {
-                sudo: ecdsaValidator,
+            const permissions = [
+              {
+                target: '0xc2132d05d31c914a87c6611c10748aeb04b58e8f',
+                valueLimit: BigInt(0),
+                abi: usdtAbi,
+                functionName: "balanceOf",
+                args: [
+                  {
+                    operator: ParamOperator.EQUAL,
+                    value: primaryWallet?.address,
+                  },
+                ],
               },
-            });
+              {
+                target: '0xc2132d05d31c914a87c6611c10748aeb04b58e8f',
+                valueLimit: BigInt(0),
+                abi: usdtAbi,
+                functionName: "transfer",
+                args: [
+                  { operator: ParamOperator.NOT_EQUAL, value: "1" },
+                  { operator: ParamOperator.GREATER_THAN, value: 0 },
+                ],
+              },
+            ];
 
+            const sessionKeyValidator = await signerToSessionKeyValidator(
+              publicClient,
+              {
+                signer: sessionKeySigner,
+                validatorData: {
+                  paymaster: oneAddress,
+                  permissions: permissions,
+                },
+              }
+            );
+
+            const sessionKeyAccountKernel = await createKernelAccount(
+              publicClient,
+              {
+                plugins: {
+                  sudo: ecdsaValidator,
+                  regular: sessionKeyValidator,
+                },
+              }
+            );
+
+            const serializedSessionKey = await serializeSessionKeyAccount(
+              sessionKeyAccountKernel,
+              sessionPrivateKey
+            );
+
+            const sessionKeyAccount = await deserializeSessionKeyAccount(
+              publicClient,
+              serializedSessionKey
+            );
 
             const kernelClient = createKernelAccountClient({
-              account: account,
+              account: sessionKeyAccount,
               chain: polygon,
               transport: http(process.env.NEXT_PUBLIC_ZERODEV_BUNDLER_RPC),
               sponsorUserOperation: async ({
@@ -95,39 +149,26 @@ export default function Home() {
               },
             });
 
-            console.log("My account:", kernelClient);
+            console.log("kernelClient", kernelClient);
 
-            const iface = new ethers.Interface(usdtAbi); 
-
-
-            // From intersend web-app
-
-            // --------*********---------
-            // const uoCallData = iface.encodeFunctionData('transfer',
-            // [
-            //   walletAddressInput?.toString(),
-            // ethers.parseUnits(usdtTransferDetails?.amount?.toString(), 6),
+            // // following uoCallData sends 0.1 USDT to 0x9C3C4ba068CD06Da93d31F2983298590907d3766
+            // const iface = new ethers.Interface(usdtAbi);
+            // const uoCallData = iface.encodeFunctionData("transfer", [
+            //   "0x9C3C4ba068CD06Da93d31F2983298590907d3766",
+            //   ethers.parseUnits("0.1", 6),
             // ]);
 
-            // --------*********---------
+            // const hash = await kernelClient?.sendUserOperation({
+            //   userOperation: {
+            //     callData: kernelClient?.account.encodeCallData({
+            //       to: "0xc2132d05d31c914a87c6611c10748aeb04b58e8f",
+            //       value: BigInt(0),
+            //       data: uoCallData,
+            //     }),
+            //   },
+            // });
 
-
-
-            // following uoCallData sends 0.1 USDT to 0x9C3C4ba068CD06Da93d31F2983298590907d3766 
-            const uoCallData = iface.encodeFunctionData("transfer", [
-              "0x9C3C4ba068CD06Da93d31F2983298590907d3766",
-              ethers.parseUnits("0.1", 6),
-            ]);
-
-            const hash = await kernelClient?.sendUserOperation({
-              userOperation: {
-                callData: (await kernelClient?.account.encodeCallData({
-                  to: "0xc2132d05d31c914a87c6611c10748aeb04b58e8f", // this is USDT address
-                  value: BigInt(0),
-                  data: uoCallData,
-                })),
-              },
-            });
+            console.log("hash", hash);
           },
         },
         walletConnectors: [
